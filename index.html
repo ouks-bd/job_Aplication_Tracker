@@ -208,6 +208,27 @@
     .table-wrap { overflow-x: auto; }
     .date-cell { white-space: nowrap; }
     table { min-width: 700px; }
+
+    [hidden] { display:none !important; }
+    .cloud-bar, .cloud-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:14px 0; }
+    .cloud-button { padding:9px 13px; border:1px solid #bdcbd5; border-radius:6px; cursor:pointer; background:#edf3f7; color:#26465d; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .notice { padding:12px 14px; margin:14px 0; background:#eff6fb; border:1px solid #cfe0ec; border-radius:7px; line-height:1.5; font-size:.9rem; }
+    .notice.error { background:#fff1ef; border-color:#e9bab4; color:#9c3024; }
+    .cloud-muted { color:#61717c; font-size:.85rem; line-height:1.5; margin:10px 0; }
+    .auth-panel { max-width:430px; margin:24px auto; }
+    .auth-panel h2 { margin-bottom:15px; font-size:1.25rem; }
+    .auth-panel label, #connectionForm label { display:block; margin:12px 0 5px; font-size:.9rem; }
+    .auth-panel input, #connectionForm input { width:100%; min-width:0; height:40px; padding:9px 12px; border:1px solid #ccc; border-radius:6px; font:inherit; }
+    .auth-panel button[type=submit] { background:#3498db; color:white; border:0; }
+    details { margin:20px 0; } summary { cursor:pointer; color:#305872; }
+    #connectionForm { max-width:620px; }
+    dialog { margin:auto; width:min(850px,94vw); max-height:90vh; overflow:auto; padding:24px; border:0; border-radius:10px; box-shadow:0 12px 40px #0003; }
+    dialog::backdrop { background:#0006; }
+    .preview-scroll { overflow:auto; max-height:300px; margin:15px 0; }
+    .preview-scroll table { font-size:.8rem; }
+    .modal { max-height:90vh; overflow:auto; }
+    @media(max-width:560px) { .cloud-actions button { flex:1 1 120px; } .filter button { flex:1 1 140px; } }
   </style>
 </head>
 <body>
@@ -215,6 +236,17 @@
 <div class="container">
   <h1>Job Application Tracker</h1>
   <p id="systemDate" class="system-date"></p>
+
+
+  <div class="cloud-bar"><p id="modeText" class="cloud-muted"></p><span id="account" class="cloud-muted"></span><button id="refresh" class="cloud-button" hidden>Refresh online data</button><button id="logout" class="cloud-button" hidden>Sign out</button></div>
+  <p id="message" class="notice" role="status" aria-live="polite" hidden></p>
+  <details id="setup"><summary>Online saving setup</summary>
+    <p class="cloud-muted">Run database.sql from the download package in your Supabase project first. Enter the project's public connection details below. These settings apply to this browser. To preconfigure all devices, set TRACKER_CONFIG in the HTML before publishing.</p>
+    <form id="connectionForm"><label for="projectUrl">Supabase project URL</label><input id="projectUrl" type="url" placeholder="https://your-project.supabase.co" required><label for="publishableKey">Publishable key</label><input id="publishableKey" placeholder="sb_publishable_…" autocomplete="off" required><p class="cloud-muted">Use only a publishable or legacy anon key. Never enter your password, database password, or secret key here.</p><button id="connectButton" class="cloud-button" type="submit">Connect online saving</button></form>
+  </details>
+  <section id="authPanel" class="auth-panel" hidden><h2>Sign in to your tracker</h2><form id="authForm"><label for="email">Email</label><input id="email" type="email" autocomplete="username" required><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required><div class="cloud-actions"><button class="cloud-button" type="submit">Sign in</button><button id="signup" class="cloud-button" type="button">Create account</button><button id="forgot" class="cloud-button" type="button">Forgot password?</button></div></form></section>
+  <section id="recoveryPanel" class="auth-panel" hidden><h2>Choose a new password</h2><form id="recoveryForm"><label for="newPassword">New password (at least 12 characters)</label><input id="newPassword" type="password" minlength="12" autocomplete="new-password" required><div class="cloud-actions"><button class="cloud-button" type="submit">Save password</button></div></form></section>
+  <section id="trackerPanel" hidden>
 
   <!-- Form -->
   <form id="jobForm">
@@ -246,7 +278,11 @@
   <!-- Filter -->
   <div class="filter">
     <button id="sheetjsexport"><b>Export as XLSX</b></button>
-    <select id="filterStatus">
+    <button id="jsonExport" class="cloud-button">Backup JSON</button>
+    <button id="importButton" class="cloud-button">Import backup</button>
+    <button id="browserImport" class="cloud-button" hidden>Import old browser data</button>
+    <input id="importFile" type="file" accept=".xlsx,.json" hidden>
+    <select id="filterStatus" aria-label="Filter applications">
       <option value="All">All</option>
       <option value="Applied">Applied</option>
       <option value="Interview">Interview</option>
@@ -254,6 +290,7 @@
     </select>
   </div>
 
+  <p id="count" class="cloud-muted"></p>
   <!-- Table -->
   <div class="table-wrap">
   <table>
@@ -270,6 +307,8 @@
     <tbody id="jobList"></tbody>
   </table>
   </div>
+  <p id="storageNote" class="cloud-muted"></p>
+  </section>
 </div>
 
 <!-- Edit Modal -->
@@ -300,157 +339,200 @@
   </div>
 </div>
 
+<dialog id="importDialog" aria-labelledby="importTitle"><h2 id="importTitle">Review your import</h2><p id="importSummary" class="cloud-muted"></p><div class="preview-scroll"><table><thead><tr><th>Company</th><th>Role</th><th>Salary</th><th>Applied Date</th><th>Status</th></tr></thead><tbody id="importPreview"></tbody></table></div><p class="cloud-muted">Showing up to 30 new records. Import adds applications without replacing the current list.</p><div class="cloud-actions"><button id="confirmImport" class="cloud-button">Import applications</button><button id="cancelImport" class="cloud-button">Cancel</button></div></dialog>
+<script>
+// Public connection settings only. Never put passwords or secret keys here.
+window.TRACKER_CONFIG = { url: "", key: "" };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
-  let jobs = JSON.parse(localStorage.getItem('jobs') || '[]');
-  let editIndex = null;
-  let dateWasEdited = false;
-
-  // Build a date from local calendar components; UTC conversion can shift the day.
-  function localDate(now = new Date()) {
-    return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0')
-      + '-' + String(now.getDate()).padStart(2, '0');
-  }
-
-  function updateSystemDate() {
-    document.getElementById('systemDate').textContent = 'Today: ' +
-      new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    if (!dateWasEdited && document.activeElement !== document.getElementById('appliedDate')) {
-      document.getElementById('appliedDate').value = localDate();
-    }
-  }
-
-  document.getElementById('appliedDate').addEventListener('input', () => { dateWasEdited = true; });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) updateSystemDate(); });
-  updateSystemDate();
-  setInterval(updateSystemDate, 60000);
-
-  function save() { localStorage.setItem('jobs', JSON.stringify(jobs)); }
-
-  function esc(s) {
-    return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
-  function formatSalary(amount, currency) {
-    if (!amount) return '—';
-    return (currency || '$') + Number(amount).toLocaleString();
-  }
-
-  function render() {
-    const filter = document.getElementById('filterStatus').value;
-    const tbody  = document.getElementById('jobList');
-    const list   = filter === 'All' ? jobs : jobs.filter(j => j.status === filter);
-
-    if (list.length === 0) {
-      tbody.innerHTML = `<tr class="empty-msg"><td colspan="6">No applications found. Add one above!</td></tr>`;
-      return;
-    }
-
-    tbody.innerHTML = list.map(job => {
-      const ri = jobs.indexOf(job);
-      return `
-        <tr>
-          <td>${esc(job.company)}</td>
-          <td>${esc(job.role)}</td>
-          <td class="salary-cell">${formatSalary(job.salary, job.currency)}</td>
-          <td class="date-cell">${esc(job.appliedDate || "—")}</td>
-          <td><span class="badge badge-${job.status}">${job.status}</span></td>
-          <td>
-            <button class="action-btn edit"   onclick="openEdit(${ri})">Edit</button>
-            <button class="action-btn delete" onclick="deleteJob(${ri})">Delete</button>
-          </td>
-        </tr>`;
-    }).join('');
-  }
-
-  // Add — unshift puts new entry at the TOP
-  document.getElementById('jobForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    jobs.unshift({
-      company:  document.getElementById('company').value.trim(),
-      role:     document.getElementById('role').value.trim(),
-      salary:   document.getElementById('salary').value.trim(),
-      currency: document.getElementById('currency').value,
-      status:   document.getElementById('status').value,
-      appliedDate: dateWasEdited ? document.getElementById('appliedDate').value : localDate(),
-    });
-    save();
-    render();
-    this.reset();
-    document.getElementById('currency').value = '$';
-    dateWasEdited = false;
-    updateSystemDate();
+'use strict';
+const $ = id => document.getElementById(id);
+const TABLE = 'job_tracker_applications';
+const states = ['Applied','Interview','Rejected'];
+const symbols = ['$','€','£','₹','¥'];
+let jobs = [], client = null, user = null, cloud = false, ready = false, busy = false;
+let revision = 0, readSerial = 0, editId = null, editedDate = false, pendingImport = [], recovering = false;
+let recoveryLink = new URLSearchParams(location.hash.slice(1)).get('type') === 'recovery';
+function localDate(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function uuid() { return crypto.randomUUID(); }
+function notice(text, error=false) { $('message').textContent=text; $('message').hidden=!text; $('message').classList.toggle('error',error); }
+function clock() {
+  $('systemDate').textContent='Today: '+new Date().toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  if (!editedDate && document.activeElement!==$('appliedDate')) $('appliedDate').value=localDate();
+}
+function parseDate(value) {
+  if (value===null || value===undefined || value==='') return '';
+  if (value instanceof Date) { if (isNaN(value)) throw Error('Invalid date in backup.'); value=localDate(value); }
+  if (typeof value==='number') { const d=window.XLSX?.SSF.parse_date_code(value); if(!d)throw Error('Invalid Excel date.'); value=`${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`; }
+  let s=String(value).trim(); const us=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(us)s=`${us[3]}-${us[1].padStart(2,'0')}-${us[2].padStart(2,'0')}`;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s))throw Error('Use YYYY-MM-DD or MM/DD/YYYY for application dates.');
+  const [y,m,d]=s.split('-').map(Number), v=new Date(y,m-1,d,12);
+  if(y<1900||y>9999||v.getFullYear()!==y||v.getMonth()+1!==m||v.getDate()!==d)throw Error('Invalid application date: '+s);
+  return s;
+}
+function normalize(raw) {
+  const company=String(raw.company??raw.Company??'').trim(), role=String(raw.role??raw.Role??'').trim();
+  if(!company||!role)throw Error('Each application needs a company and job role.');
+  if(company.length>300||role.length>1000)throw Error('Company or job role is too long.');
+  let salary=raw.salary??raw.Salary??'', currency=raw.currency??raw.Currency??'$';
+  if(typeof salary==='string') { salary=salary.trim(); const prefix=symbols.find(c=>salary.startsWith(c)); if(prefix){currency=prefix;salary=salary.slice(prefix.length);} salary=salary.replaceAll(',','').trim(); }
+  if(salary===''||salary==='—'||salary===null)salary=null;
+  else { salary=Number(salary);if(!Number.isFinite(salary)||salary<0||salary>999999999999)throw Error('Invalid salary in an application.'); }
+  if(!symbols.includes(currency))throw Error('Unsupported currency: '+currency);
+  let status=String(raw.status??raw.Status??'Applied').trim();if(status==='Interviewed')status='Interview';
+  if(!states.includes(status))throw Error('Unknown application status: '+status);
+  return {company,role,salary,currency,status,appliedDate:parseDate(raw.appliedDate??raw.applied_date??raw['Applied Date']??'')};
+}
+function signature(j) {return JSON.stringify([j.company,j.role,j.salary,j.currency,j.status,j.appliedDate]);}
+function storedJobs() { const raw=localStorage.getItem('jobs'); if(!raw)return []; const rows=JSON.parse(raw);if(!Array.isArray(rows))throw Error('Browser data is not readable. Use your Excel backup.');return rows; }
+function localSave(next) {
+  const original=localStorage.getItem('jobs');
+  if(original!==null && localStorage.getItem('job_tracker_original_backup')===null)localStorage.setItem('job_tracker_original_backup',original);
+  localStorage.setItem('jobs',JSON.stringify(next));jobs=next;
+}
+function salaryText(j){return j.salary===null?'—':j.currency+Number(j.salary).toLocaleString();}
+function td(tr,text,cls=''){const el=document.createElement('td');el.textContent=text;el.className=cls;tr.append(el);return el;}
+function render(){
+  const list=jobs.filter(j=>$('filterStatus').value==='All'||j.status===$('filterStatus').value);$('jobList').replaceChildren();
+  $('count').textContent=`${list.length} shown · ${jobs.length} total applications`;
+  list.forEach(j=>{const tr=document.createElement('tr');td(tr,j.company);td(tr,j.role);td(tr,salaryText(j),'salary-cell');td(tr,j.appliedDate||'—','date-cell');
+    const badge=document.createElement('span');badge.className='badge badge-'+j.status;badge.textContent=j.status;td(tr,'').append(badge);
+    const actions=td(tr,'');for(const [label,cls,action] of [['Edit','edit',()=>openEdit(j.id)],['Delete','delete',()=>removeJob(j.id)]]){const b=document.createElement('button');b.textContent=label;b.className='action-btn '+cls;b.disabled=busy||!ready;b.onclick=action;actions.append(b);} $('jobList').append(tr);
   });
-
-  // Delete
-  function deleteJob(i) {
-    if (!confirm('Delete this application?')) return;
-    jobs.splice(i, 1);
-    save();
-    render();
-  }
-
-  // Edit
-  function openEdit(i) {
-    editIndex = i;
-    const j = jobs[i];
-    document.getElementById('editCompany').value  = j.company;
-    document.getElementById('editRole').value     = j.role;
-    document.getElementById('editSalary').value   = j.salary || '';
-    document.getElementById('editCurrency').value = j.currency || '$';
-    document.getElementById('editStatus').value   = j.status;
-    document.getElementById('editAppliedDate').value = j.appliedDate || '';
-    document.getElementById('editModal').classList.add('open');
-  }
-
-  document.getElementById('saveEdit').addEventListener('click', function() {
-    if (editIndex === null) return;
-    if (!document.getElementById('editAppliedDate').reportValidity()) return;
-    jobs[editIndex] = {
-      ...jobs[editIndex],
-      company:  document.getElementById('editCompany').value.trim(),
-      role:     document.getElementById('editRole').value.trim(),
-      salary:   document.getElementById('editSalary').value.trim(),
-      currency: document.getElementById('editCurrency').value,
-      status:   document.getElementById('editStatus').value,
-      appliedDate: document.getElementById('editAppliedDate').value,
-    };
-    save();
-    render();
-    closeModal();
-  });
-
-  document.getElementById('cancelEdit').addEventListener('click', closeModal);
-  document.getElementById('editModal').addEventListener('click', function(e) {
-    if (e.target === this) closeModal();
-  });
-
-  function closeModal() {
-    document.getElementById('editModal').classList.remove('open');
-    editIndex = null;
-  }
-
-  document.getElementById('filterStatus').addEventListener('change', render);
-
-  // Export XLSX
-  document.getElementById('sheetjsexport').addEventListener('click', function() {
-    if (!jobs.length) { alert('No applications to export!'); return; }
-    const rows = jobs.map(j => ({
-      Company: j.company,
-      Role:    j.role,
-      Salary:  j.salary ? (j.currency || '$') + j.salary : '',
-      'Applied Date': j.appliedDate || '',
-      Status:  j.status,
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Applications');
-    XLSX.writeFile(wb, 'job_applications.xlsx');
-  });
-
+  if(!list.length){const tr=document.createElement('tr');const cell=td(tr,ready?'No applications found. Add one or import your backup.':'Applications are not loaded.','empty-msg');cell.colSpan=6;$('jobList').append(tr);}
+}
+function controls(){
+  document.querySelectorAll('button').forEach(b=>b.disabled=busy);
+  ['btn','sheetjsexport','jsonExport','importButton','browserImport'].forEach(id=>$(id).disabled=busy||!ready);
+  $('connectButton').disabled=busy||!!user;
   render();
+}
+async function task(fn){if(busy)return;busy=true;controls();try{await fn();}catch(e){notice(e.message||String(e),true);}finally{busy=false;controls();}}
+function stamp(){if(cloud&&!user)throw Error('Sign in first.');return {id:user?.id,revision};}
+function valid(s){return s.id===user?.id&&s.revision===revision;}
+function fromDB(j){return {...normalize(j),id:j.id,importKey:j.import_key,updatedAt:j.updated_at,createdAt:j.created_at};}
+function toDB(j){return {company:j.company,role:j.role,salary:j.salary,currency:j.currency,status:j.status,applied_date:j.appliedDate||null};}
+async function readCloud(){
+  const s=stamp(), serial=++readSerial; let all=[],offset=0;
+  for(;;){const {data,error}=await client.from(TABLE).select('*').eq('owner_id',s.id).order('created_at',{ascending:false}).order('id').range(offset,offset+499);
+    if(error)throw error;if(!valid(s)||serial!==readSerial)return false;all.push(...data);if(data.length<500)break;offset+=500;
+  }
+  if(!valid(s)||serial!==readSerial)return false;jobs=all.map(fromDB);ready=true;controls();return true;
+}
+function showSession(){
+  $('authPanel').hidden=!cloud||!!user||recovering;$('recoveryPanel').hidden=!recovering;
+  $('trackerPanel').hidden=cloud&&(!user||recovering);
+  $('logout').hidden=!cloud||!user;$('refresh').hidden=!cloud||!user;$('browserImport').hidden=!cloud||!user;
+  $('account').textContent=user?'Signed in: '+user.email:'';
+  $('modeText').textContent=cloud?'Online mode · Your account owns your saved applications.':'Local mode · Saved in this browser only. Configure online saving to sync devices.';
+  $('storageNote').textContent=cloud?'Changes save online. Refresh to load changes made on another device.':'Keep an Excel or JSON backup before changing browsers or clearing browser data.';
+  controls();
+}
+function closeModal(){$('editModal').classList.remove('open');editId=null;}
+async function applySession(session,event){
+  const next=session?.user??null,changed=next?.id!==user?.id;
+  if(changed){revision++;readSerial++;jobs=[];ready=false;pendingImport=[];closeModal();$('importDialog').close();user=next;}
+  if(event==='PASSWORD_RECOVERY'||(recoveryLink&&next)){recovering=true;recoveryLink=false;}
+  if(!next)recovering=false;
+  showSession();
+  if(next&&!recovering&&(changed||!ready)){try{await readCloud();}catch(e){notice('Could not load online applications: '+e.message,true);}}
+}
+function formValues(edit=false){return normalize(edit?{company:$('editCompany').value,role:$('editRole').value,salary:$('editSalary').value,currency:$('editCurrency').value,status:$('editStatus').value,appliedDate:$('editAppliedDate').value}:{company:$('company').value,role:$('role').value,salary:$('salary').value,currency:$('currency').value,status:$('status').value,appliedDate:editedDate?$('appliedDate').value:localDate()});}
+async function writeJob(values,existing){
+  if(!ready)throw Error('Load applications before saving.');const s=stamp();
+  if(cloud){let query;
+    if(existing)query=client.from(TABLE).update(toDB(values)).eq('owner_id',s.id).eq('id',existing.id).eq('updated_at',existing.updatedAt);
+    else query=client.from(TABLE).insert({...toDB(values),id:uuid(),owner_id:s.id});
+    const {data,error}=await query.select('id');if(error)throw error;if(!valid(s))return false;
+    if(!data.length)throw Error('This application changed on another device. Refresh and try again.');
+    try{await readCloud();}catch(e){ready=false;throw Error('Saved online, but refresh failed. Refresh before making further changes.');}
+  }else localSave(existing?jobs.map(j=>j.id===existing.id?{...j,...values}:j):[{...values,id:uuid()},...jobs]);
+  if(!valid(s))return false;render();notice(cloud?'Saved online.':'Saved in this browser.');return true;
+}
+$('appliedDate').oninput=()=>{editedDate=true;};
+$('jobForm').onsubmit=e=>{e.preventDefault();task(async()=>{if(await writeJob(formValues())){$('jobForm').reset();editedDate=false;clock();}});};
+function openEdit(id){const j=jobs.find(j=>j.id===id);if(!j)return;editId=id;
+  for(const [field,value] of [['editCompany',j.company],['editRole',j.role],['editSalary',j.salary??''],['editCurrency',j.currency],['editStatus',j.status],['editAppliedDate',j.appliedDate]])$(field).value=value;
+  $('editModal').classList.add('open');
+}
+$('saveEdit').onclick=()=>task(async()=>{if(!$('editAppliedDate').reportValidity()||!$('editSalary').reportValidity())return;const j=jobs.find(j=>j.id===editId);if(!j)throw Error('Application is unavailable. Refresh and try again.');if(await writeJob(formValues(true),j))closeModal();});
+$('cancelEdit').onclick=closeModal;$('editModal').onclick=e=>{if(e.target===$('editModal'))closeModal();};
+function removeJob(id){if(!confirm('Delete this application?'))return;task(async()=>{
+  const j=jobs.find(j=>j.id===id),s=stamp();if(!j)return;
+  if(cloud){const {data,error}=await client.from(TABLE).delete().eq('owner_id',s.id).eq('id',j.id).eq('updated_at',j.updatedAt).select('id');if(error)throw error;if(!valid(s))return;if(!data.length)throw Error('This application changed. Refresh before deleting.');try{await readCloud();}catch{ready=false;throw Error('Deleted online. Refresh to reload your list.');}}
+  else localSave(jobs.filter(j=>j.id!==id));render();notice('Application deleted.');
+});}
+$('filterStatus').onchange=render;$('refresh').onclick=()=>task(async()=>{if(await readCloud())notice('Online applications refreshed.');});
+function download(name,content,type){const a=document.createElement('a'),url=URL.createObjectURL(new Blob([content],{type}));a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('jsonExport').onclick=()=>download('job_applications.json',JSON.stringify({format:'job-tracker-v2',jobs:jobs.map(j=>({...normalize(j),importKey:j.importKey||null}))},null,2),'application/json');
+$('sheetjsexport').onclick=()=>task(async()=>{
+  if(!window.XLSX)throw Error('Excel support could not load. Check your connection or use Backup JSON.');
+  const rows=jobs.map(j=>({Company:j.company,Role:j.role,Salary:j.salary===null?'':j.currency+j.salary,'Applied Date':j.appliedDate,Status:j.status}));
+  const ws=XLSX.utils.json_to_sheet(rows);ws['!cols']=[{wch:28},{wch:65},{wch:15},{wch:16},{wch:16}];const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Applications');XLSX.writeFile(wb,'job_applications.xlsx');
+});
+async function prepareImport(raw){
+  if(!Array.isArray(raw)||!raw.length)throw Error('No applications found.');if(raw.length>10000)throw Error('Import at most 10,000 records at a time.');
+  const s=stamp(),occurrences=new Map(),normalized=await Promise.all(raw.map(async (r,i)=>{
+    let j;try{j=normalize(r);}catch(e){throw Error('Record '+(i+1)+': '+e.message);}
+    const sig=signature(j),n=occurrences.get(sig)||0;occurrences.set(sig,n+1);
+    const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(sig+'|'+n));
+    const importKey=/^[a-f0-9]{64}$/.test(r.importKey||'')?r.importKey:Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
+    return {...j,id:uuid(),importKey};
+  }));
+  if(!valid(s))return;
+  const existingKeys=new Set(jobs.map(j=>j.importKey).filter(Boolean)),have=new Map(),seen=new Map();
+  jobs.forEach(j=>have.set(signature(j),(have.get(signature(j))||0)+1));
+  pendingImport=normalized.filter(j=>{const sig=signature(j),n=(seen.get(sig)||0)+1;seen.set(sig,n);return !existingKeys.has(j.importKey)&&n>(have.get(sig)||0);});
+  $('importSummary').textContent=`${raw.length} records read. ${pendingImport.length} new; ${raw.length-pendingImport.length} matching records skipped. Destination: ${cloud?user.email+' (online)':'this browser'}. Missing dates remain blank.`;
+  $('importPreview').replaceChildren();pendingImport.slice(0,30).forEach(j=>{const tr=document.createElement('tr');[j.company,j.role,salaryText(j),j.appliedDate||'—',j.status].forEach(v=>td(tr,v));$('importPreview').append(tr);});
+  $('importDialog').showModal();
+}
+$('importButton').onclick=()=>$('importFile').click();
+$('importFile').onchange=()=>task(async()=>{
+  const file=$('importFile').files[0];$('importFile').value='';if(!file)return;if(file.size>10*1024*1024)throw Error('Choose a file smaller than 10 MB.');
+  let rows;if(file.name.toLowerCase().endsWith('.json')){const doc=JSON.parse(await file.text());rows=Array.isArray(doc)?doc:doc.jobs;}
+  else if(file.name.toLowerCase().endsWith('.xlsx')){if(!window.XLSX)throw Error('Excel support could not load. Check your internet connection.');const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:true});const sheet=wb.SheetNames.includes('Applications')?'Applications':wb.SheetNames[0];rows=XLSX.utils.sheet_to_json(wb.Sheets[sheet],{defval:'',raw:true});}
+  else throw Error('Choose an XLSX or JSON backup.');await prepareImport(rows);
+});
+$('browserImport').onclick=()=>task(()=>prepareImport(storedJobs()));
+$('cancelImport').onclick=()=>{$('importDialog').close();pendingImport=[];};
+$('confirmImport').onclick=()=>task(async()=>{
+  if(!pendingImport.length){$('importDialog').close();notice('No new applications to import.');return;}
+  const s=stamp(),batch=pendingImport.slice();
+  if(cloud){const {error}=await client.from(TABLE).upsert(batch.map(j=>({...toDB(j),id:j.id,owner_id:s.id,import_key:j.importKey})),{onConflict:'owner_id,import_key',ignoreDuplicates:true});if(error)throw error;if(!valid(s))return;
+    try{await readCloud();}catch{ready=false;throw Error('Import request completed, but the result could not be loaded. Refresh before retrying.');}
+    const keys=new Set(jobs.map(j=>j.importKey));if(batch.some(j=>!keys.has(j.importKey)))throw Error('Could not verify every imported row. Refresh and check your list.');
+  }else localSave([...batch,...jobs]);
+  if(!valid(s))return;pendingImport=[];$('importDialog').close();render();notice(`${batch.length} applications imported and verified ${cloud?'online':'in this browser'}. Your backup file is unchanged.`);
+});
+function validateConfig(c){
+  if(!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(c.url))throw Error('Enter your HTTPS Supabase project URL.');
+  if(c.key.startsWith('sb_publishable_'))return c;
+  let role;try{const token=c.key.split('.')[1];role=JSON.parse(atob(token.replace(/-/g,'+').replace(/_/g,'/'))).role;}catch{}
+  if(role!=='anon')throw Error('Use the publishable key or legacy anon key. Do not use a secret or service-role key.');return c;
+}
+$('connectionForm').onsubmit=e=>{e.preventDefault();task(async()=>{if(user)throw Error('Sign out before changing the connection.');const c=validateConfig({url:$('projectUrl').value.trim(),key:$('publishableKey').value.trim()});localStorage.setItem('job_tracker_connection',JSON.stringify(c));location.reload();});};
+function redirectUrl(){if(location.protocol==='file:')throw Error('Open the hosted GitHub Pages site to use email confirmation and password reset.');return location.origin+location.pathname;}
+$('authForm').onsubmit=e=>{e.preventDefault();task(async()=>{try{const {data,error}=await client.auth.signInWithPassword({email:$('email').value.trim(),password:$('password').value});if(error)throw error;await applySession(data.session,'SIGNED_IN');if(ready)notice('Signed in. Applications loaded.');}finally{$('password').value='';}});};
+$('signup').onclick=()=>task(async()=>{if(!$('email').reportValidity())return;if($('password').value.length<12)throw Error('Choose a password with at least 12 characters.');try{const {data,error}=await client.auth.signUp({email:$('email').value.trim(),password:$('password').value,options:{emailRedirectTo:redirectUrl()}});if(error)throw error;if(data.session)await applySession(data.session,'SIGNED_IN');notice(data.session?'Account created.':'Check your email to confirm your account, then sign in. If already registered, sign in or reset your password.');}finally{$('password').value='';}});
+$('forgot').onclick=()=>task(async()=>{if(!$('email').reportValidity())return;const {error}=await client.auth.resetPasswordForEmail($('email').value.trim(),{redirectTo:redirectUrl()});if(error)throw error;notice('If this email has an account, a password reset link will be sent.');});
+$('recoveryForm').onsubmit=e=>{e.preventDefault();task(async()=>{const {error}=await client.auth.updateUser({password:$('newPassword').value});if(error)throw error;$('newPassword').value='';recovering=false;history.replaceState(null,'',location.pathname);showSession();await readCloud();notice('Password updated.');});};
+$('logout').onclick=()=>task(async()=>{const {error}=await client.auth.signOut({scope:'local'});if(error)throw error;await applySession(null,'SIGNED_OUT');notice('Signed out on this device.');});
+async function boot(){
+  clock();setInterval(clock,60000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)clock();});
+  const saved=localStorage.getItem('job_tracker_connection'),config=saved?JSON.parse(saved):(window.TRACKER_CONFIG||{});
+  if(config.url||config.key){cloud=true;validateConfig(config);$('projectUrl').value=config.url;$('publishableKey').value=config.key;
+    if(!window.supabase)throw Error('Login library could not load. Check your connection and reload.');
+    client=window.supabase.createClient(config.url,config.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+    client.auth.onAuthStateChange((event,session)=>{setTimeout(()=>applySession(session,event).catch(e=>notice(e.message,true)),0);});
+    const {data,error}=await client.auth.getSession();if(error)throw error;await applySession(data.session,'INITIAL_SESSION');
+  }else{jobs=storedJobs().map(j=>({...j,...normalize(j),id:j.id||uuid()}));ready=true;showSession();}
+}
+boot().catch(e=>{ready=false;$('trackerPanel').hidden=true;$('authPanel').hidden=true;notice(e.message,true);});
+
 </script>
 </body>
 </html>
