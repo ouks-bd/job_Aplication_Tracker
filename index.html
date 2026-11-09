@@ -255,7 +255,7 @@
     <input type="text" id="role"    placeholder="Job Role"     required />
 
     <div class="salary-row">
-      <input type="number" id="salary"   placeholder="Salary (optional)" min="0" />
+      <input type="text" id="salary" placeholder="Salary or range (e.g. 99000-145000)" aria-label="Salary or salary range" />
       <select id="currency">
         <option value="$">$ USD</option>
         <option value="€">€ EUR</option>
@@ -318,7 +318,7 @@
     <h2>Edit Application</h2>
     <input type="text"   id="editCompany"  placeholder="Company Name" />
     <input type="text"   id="editRole"     placeholder="Job Role" />
-    <input type="number" id="editSalary"   placeholder="Salary (optional)" min="0" />
+    <input type="text" id="editSalary" placeholder="Salary or range (e.g. 99000-145000)" aria-label="Salary or salary range" />
     <select id="editCurrency">
       <option value="$">$ USD</option>
       <option value="€">€ EUR</option>
@@ -353,6 +353,7 @@ const $ = id => document.getElementById(id);
 const TABLE = 'job_tracker_applications';
 const states = ['Applied','Interview','Rejected'];
 const symbols = ['$','€','£','₹','¥'];
+let cloudSalaryRanges = false;
 let jobs = [], client = null, user = null, cloud = false, ready = false, busy = false;
 let revision = 0, readSerial = 0, editId = null, editedDate = false, pendingImport = [], recovering = false;
 let recoveryLink = new URLSearchParams(location.hash.slice(1)).get('type') === 'recovery';
@@ -374,14 +375,27 @@ function parseDate(value) {
   if(y<1900||y>9999||v.getFullYear()!==y||v.getMonth()+1!==m||v.getDate()!==d)throw Error('Invalid application date: '+s);
   return s;
 }
+function parseSalary(value) {
+  if(value===null || value===undefined || String(value).trim()==='' || String(value).trim()==='—')return null;
+  const text=String(value).trim().replaceAll(',','').replace(/[–—]/g,'-');
+  const match=text.match(/^(\d+(?:\.\d{1,2})?)(?:\s*-\s*(\d+(?:\.\d{1,2})?))?$/);
+  if(!match)throw Error('Enter a salary such as 99000 or a range such as 99000-145000.');
+  const low=Number(match[1]), high=match[2]===undefined?null:Number(match[2]);
+  if(low>999999999999 || (high!==null && high>999999999999))throw Error('Salary is too large.');
+  if(high!==null && high<low)throw Error('The maximum salary must be at least the minimum salary.');
+  return high===null?low:low+'-'+high;
+}
 function normalize(raw) {
   const company=String(raw.company??raw.Company??'').trim(), role=String(raw.role??raw.Role??'').trim();
   if(!company||!role)throw Error('Each application needs a company and job role.');
   if(company.length>300||role.length>1000)throw Error('Company or job role is too long.');
   let salary=raw.salary??raw.Salary??'', currency=raw.currency??raw.Currency??'$';
   if(typeof salary==='string') { salary=salary.trim(); const prefix=symbols.find(c=>salary.startsWith(c)); if(prefix){currency=prefix;salary=salary.slice(prefix.length);} salary=salary.replaceAll(',','').trim(); }
-  if(salary===''||salary==='—'||salary===null)salary=null;
-  else { salary=Number(salary);if(!Number.isFinite(salary)||salary<0||salary>999999999999)throw Error('Invalid salary in an application.'); }
+  salary=parseSalary(salary);
+  if(raw.salary_max!==null && raw.salary_max!==undefined){
+    if(salary===null)throw Error('A salary range needs a minimum salary.');
+    salary=parseSalary(String(salary)+'-'+String(raw.salary_max));
+  }
   if(!symbols.includes(currency))throw Error('Unsupported currency: '+currency);
   let status=String(raw.status??raw.Status??'Applied').trim();if(status==='Interviewed')status='Interview';
   if(!states.includes(status))throw Error('Unknown application status: '+status);
@@ -394,7 +408,7 @@ function localSave(next) {
   if(original!==null && localStorage.getItem('job_tracker_original_backup')===null)localStorage.setItem('job_tracker_original_backup',original);
   localStorage.setItem('jobs',JSON.stringify(next));jobs=next;
 }
-function salaryText(j){return j.salary===null?'—':j.currency+Number(j.salary).toLocaleString();}
+function salaryText(j){return j.salary===null?'—':String(j.salary).split('-').map(v=>j.currency+Number(v).toLocaleString(undefined,{maximumFractionDigits:2})).join(' – ');}
 function td(tr,text,cls=''){const el=document.createElement('td');el.textContent=text;el.className=cls;tr.append(el);return el;}
 function render(){
   const list=jobs.filter(j=>$('filterStatus').value==='All'||j.status===$('filterStatus').value);$('jobList').replaceChildren();
@@ -415,13 +429,22 @@ async function task(fn){if(busy)return;busy=true;controls();try{await fn();}catc
 function stamp(){if(cloud&&!user)throw Error('Sign in first.');return {id:user?.id,revision};}
 function valid(s){return s.id===user?.id&&s.revision===revision;}
 function fromDB(j){return {...normalize(j),id:j.id,importKey:j.import_key,updatedAt:j.updated_at,createdAt:j.created_at};}
-function toDB(j){return {company:j.company,role:j.role,salary:j.salary,currency:j.currency,status:j.status,applied_date:j.appliedDate||null};}
+function toDB(j){
+  const parts=j.salary===null?[]:String(j.salary).split('-').map(Number);
+  const row={company:j.company,role:j.role,salary:parts[0]??null,currency:j.currency,status:j.status,applied_date:j.appliedDate||null};
+  if(parts.length===2 || cloudSalaryRanges)row.salary_max=parts[1]??null;
+  return row;
+}
+function cloudWriteError(error){
+  if(/salary_max/i.test(error.message||''))return Error('Online salary ranges need a database update. Run salary_ranges.sql in your Supabase SQL Editor, refresh this page, and save again. Your application has not been saved.');
+  return error;
+}
 async function readCloud(){
   const s=stamp(), serial=++readSerial; let all=[],offset=0;
   for(;;){const {data,error}=await client.from(TABLE).select('*').eq('owner_id',s.id).order('created_at',{ascending:false}).order('id').range(offset,offset+499);
     if(error)throw error;if(!valid(s)||serial!==readSerial)return false;all.push(...data);if(data.length<500)break;offset+=500;
   }
-  if(!valid(s)||serial!==readSerial)return false;jobs=all.map(fromDB);ready=true;controls();return true;
+  if(!valid(s)||serial!==readSerial)return false;cloudSalaryRanges=all.some(row=>Object.hasOwn(row,'salary_max'));jobs=all.map(fromDB);ready=true;controls();return true;
 }
 function showSession(){
   $('authPanel').hidden=!cloud||!!user||recovering;$('recoveryPanel').hidden=!recovering;
@@ -447,7 +470,7 @@ async function writeJob(values,existing){
   if(cloud){let query;
     if(existing)query=client.from(TABLE).update(toDB(values)).eq('owner_id',s.id).eq('id',existing.id).eq('updated_at',existing.updatedAt);
     else query=client.from(TABLE).insert({...toDB(values),id:uuid(),owner_id:s.id});
-    const {data,error}=await query.select('id');if(error)throw error;if(!valid(s))return false;
+    const {data,error}=await query.select('id');if(error)throw cloudWriteError(error);if(!valid(s))return false;
     if(!data.length)throw Error('This application changed on another device. Refresh and try again.');
     try{await readCloud();}catch(e){ready=false;throw Error('Saved online, but refresh failed. Refresh before making further changes.');}
   }else localSave(existing?jobs.map(j=>j.id===existing.id?{...j,...values}:j):[{...values,id:uuid()},...jobs]);
@@ -503,7 +526,7 @@ $('cancelImport').onclick=()=>{$('importDialog').close();pendingImport=[];};
 $('confirmImport').onclick=()=>task(async()=>{
   if(!pendingImport.length){$('importDialog').close();notice('No new applications to import.');return;}
   const s=stamp(),batch=pendingImport.slice();
-  if(cloud){const {error}=await client.from(TABLE).upsert(batch.map(j=>({...toDB(j),id:j.id,owner_id:s.id,import_key:j.importKey})),{onConflict:'owner_id,import_key',ignoreDuplicates:true});if(error)throw error;if(!valid(s))return;
+  if(cloud){const {error}=await client.from(TABLE).upsert(batch.map(j=>({...toDB(j),id:j.id,owner_id:s.id,import_key:j.importKey})),{onConflict:'owner_id,import_key',ignoreDuplicates:true});if(error)throw cloudWriteError(error);if(!valid(s))return;
     try{await readCloud();}catch{ready=false;throw Error('Import request completed, but the result could not be loaded. Refresh before retrying.');}
     const keys=new Set(jobs.map(j=>j.importKey));if(batch.some(j=>!keys.has(j.importKey)))throw Error('Could not verify every imported row. Refresh and check your list.');
   }else localSave([...batch,...jobs]);
